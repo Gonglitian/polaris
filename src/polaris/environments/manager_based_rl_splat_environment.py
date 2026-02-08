@@ -67,6 +67,9 @@ class ManagerBasedRLSplatEnv(ManagerBasedRLEnv):
         expensive : bool
             Whether to perform expensive (splat) rendering operations.
         """
+        # 提取 env_ids，用于正确设置指定环境的物体位置
+        env_ids = kwargs.get('env_ids', None)
+
         obs, info = super().reset(*args, **kwargs)
 
         # Reset rubric state
@@ -74,10 +77,18 @@ class ManagerBasedRLSplatEnv(ManagerBasedRLEnv):
             self.rubric.reset()
 
         # Following predefined initial conditions
-        for obj, pose in object_positions.items():
-            print(f"Setting initial condition for {obj} to {pose}")
-            pose = torch.tensor(pose)[None]
-            self.scene[obj].write_root_pose_to_sim(pose)
+        for obj_name, pose in object_positions.items():
+            print(f"Setting initial condition for {obj_name} to {pose} (env_ids={env_ids})")
+            pose_tensor = torch.tensor(pose, device=self.device, dtype=torch.float32).unsqueeze(0)
+            asset = self.scene[obj_name]
+            if env_ids is not None:
+                asset.write_root_pose_to_sim(pose_tensor, env_ids=env_ids)
+                asset.write_root_velocity_to_sim(
+                    torch.zeros(1, 6, device=self.device, dtype=torch.float32), env_ids=env_ids
+                )
+            else:
+                asset.write_root_pose_to_sim(pose_tensor)
+        self.scene.write_data_to_sim()
         self.sim.render()
         self.scene.update(0)
         obs = (

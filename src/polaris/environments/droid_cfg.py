@@ -64,8 +64,8 @@ class SceneCfg(InteractiveSceneCfg):
     wrist_cam = CameraCfg(
         class_type=FixedCamera,
         prim_path="{ENV_REGEX_NS}/robot/Gripper/Robotiq_2F_85/base_link/wrist_cam",
-        height=720,
-        width=1280,
+        height=360,
+        width=640,
         data_types=["rgb", "semantic_segmentation"],
         colorize_semantic_segmentation=False,
         update_latest_camera_pose=True,
@@ -142,8 +142,8 @@ class SceneCfg(InteractiveSceneCfg):
                 )
                 asset = CameraCfg(
                     prim_path=f"{{ENV_REGEX_NS}}/scene/{name}",
-                    height=720,
-                    width=1280,
+                    height=360,
+                    width=640,
                     data_types=["rgb", "semantic_segmentation"],
                     colorize_semantic_segmentation=False,
                     spawn=None,
@@ -172,8 +172,8 @@ class SceneCfg(InteractiveSceneCfg):
         if not hasattr(self, "external_cam"):
             self.external_cam = CameraCfg(
                 prim_path="{ENV_REGEX_NS}/scene/external_cam",
-                height=720,
-                width=1280,
+                height=360,
+                width=640,
                 data_types=["rgb", "semantic_segmentation"],
                 colorize_semantic_segmentation=False,
                 spawn=sim_utils.PinholeCameraCfg(

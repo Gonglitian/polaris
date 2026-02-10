@@ -55,23 +55,30 @@ class PolarisTrajectoryRecorder:
     Image data is written incrementally to avoid memory issues and blocking.
     """
 
+    # 每隔 _FLUSH_INTERVAL 步刷盘一次，防止进程 crash 导致元数据丢失
+    _FLUSH_INTERVAL = 50
+
     # Camera image dimensions (must match Isaac Lab camera config)
-    _CAM_H = 720
-    _CAM_W = 1280
+    _CAM_H = 360
+    _CAM_W = 640
     _CAM_C = 3
     _IMAGE_KEYS = ("external_cam", "wrist_cam")
     _CAM_EXTRINSIC_KEYS = ("external_cam_pos", "external_cam_rot",
                            "wrist_cam_pos", "wrist_cam_rot")
     _CAM_INTRINSICS_KEY = "_cam_intrinsics"
 
-    def __init__(self, output_dir: str):
+    def __init__(self, output_dir: str, gpu_rank: int | None = None):
         """Initialize trajectory recorder.
 
         Args:
             output_dir: Directory to save trajectory files
+            gpu_rank: GPU rank for multi-GPU launch（区分不同进程的 HDF5 文件）
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # GPU rank（多进程启动时区分文件名，避免 HDF5 文件锁冲突）
+        self._gpu_rank = gpu_rank
 
         # Shared timestamp for this session
         self._timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -97,8 +104,11 @@ class PolarisTrajectoryRecorder:
 
     @property
     def filepath(self) -> Path:
-        """Primary filepath (env_0) for backward compatibility."""
-        return self._get_filepath(0)
+        """输出目录路径（用于日志显示）。
+
+        多 env 模式下每个 env 有独立 HDF5 文件，此属性返回输出目录。
+        """
+        return self.output_dir
 
     @property
     def episode_count(self) -> int:
@@ -108,9 +118,11 @@ class PolarisTrajectoryRecorder:
     def _get_filepath(self, env_id: int) -> Path:
         """Get or create the HDF5 filepath for a specific env_id."""
         if env_id not in self._filepaths:
-            self._filepaths[env_id] = (
-                self.output_dir / f"trajectory_{self._timestamp}_env{env_id}.h5"
-            )
+            if self._gpu_rank is not None:
+                name = f"trajectory_{self._timestamp}_gpu{self._gpu_rank}_env{env_id}.h5"
+            else:
+                name = f"trajectory_{self._timestamp}_env{env_id}.h5"
+            self._filepaths[env_id] = self.output_dir / name
         return self._filepaths[env_id]
 
     def is_recording(self, env_id: int = 0) -> bool:
@@ -189,6 +201,10 @@ class PolarisTrajectoryRecorder:
         self._h5_files[env_id] = h5f
         self._h5_img_datasets[env_id] = img_datasets
 
+        # 立即刷盘，确保 episode group 元数据写入磁盘
+        # 防止进程 crash 导致整个 HDF5 文件损坏（root object header 丢失）
+        h5f.flush()
+
         print(
             f"[Recorder] Started episode {assigned_episode} (env {env_id}): "
             f"'{instruction}' ({task_id}) -> {filepath.name}"
@@ -243,6 +259,12 @@ class PolarisTrajectoryRecorder:
                 ds[step_idx, :h, :w, :c] = img[:h, :w, :c]
 
         self._h5_step_counts[env_id] = step_idx + 1
+
+        # 定期刷盘，确保 chunk 索引元数据落盘
+        if (step_idx + 1) % self._FLUSH_INTERVAL == 0:
+            h5f = self._h5_files.get(env_id)
+            if h5f:
+                h5f.flush()
 
         # ── Accumulate non-image data in lists (small) ──
         policy_obs = obs["policy"]
@@ -392,7 +414,8 @@ class PolarisTrajectoryRecorder:
                             f"但已写入 {ds.shape[0]} 帧"
                         )
 
-        # ── Close file ──
+        # ── Flush + Close file ──
+        h5f.flush()
         h5f.close()
 
         elapsed = _time.time() - t0
@@ -417,8 +440,19 @@ class PolarisTrajectoryRecorder:
         self._h5_img_datasets.pop(env_id, None)
         self._h5_step_counts.pop(env_id, None)
 
+    def flush_all(self):
+        """刷盘所有打开的 HDF5 文件（用于信号处理时紧急保存）。"""
+        for env_id, h5f in self._h5_files.items():
+            try:
+                h5f.flush()
+            except Exception:
+                pass
+
     def save(self):
         """Finalize and close all HDF5 files."""
+        # 先刷盘所有文件，确保元数据落盘
+        self.flush_all()
+
         active_envs = [
             eid for eid, recording in self._is_recording.items() if recording
         ]
@@ -432,6 +466,7 @@ class PolarisTrajectoryRecorder:
         # Close any remaining open files
         for env_id, h5f in list(self._h5_files.items()):
             try:
+                h5f.flush()
                 h5f.close()
             except Exception:
                 pass

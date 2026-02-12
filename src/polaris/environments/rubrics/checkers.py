@@ -91,6 +91,36 @@ def is_within_xy(object1, object2, percent_threshold=0.5, open_finger_threshold=
     return checker
 
 
+def goal_pose_reached(obj_name, goal_position, goal_quat_wxyz, pos_threshold=0.05, rot_threshold=0.2):
+    """检查物体是否到达目标位姿（位置 + 朝向）
+
+    Args:
+        obj_name: 目标物体在 scene 中的名称
+        goal_position: 目标位置 [x, y, z]
+        goal_quat_wxyz: 目标四元数 [w, x, y, z]
+        pos_threshold: 位置距离阈值（米）
+        rot_threshold: 姿态角度阈值（弧度）
+    """
+    goal_pos_t = torch.tensor(goal_position, dtype=torch.float32)
+    goal_quat_t = torch.tensor(goal_quat_wxyz, dtype=torch.float32)
+
+    def checker(env):
+        obj_pos = env.scene[obj_name].data.root_pos_w[0]  # [3]
+        obj_quat = env.scene[obj_name].data.root_quat_w[0]  # [4] wxyz
+
+        # 位置欧氏距离
+        pos_dist = torch.norm(obj_pos - goal_pos_t.to(obj_pos.device))
+
+        # 四元数角距离: angle = 2 * arccos(|q1 · q2|)
+        dot = torch.abs(torch.sum(obj_quat * goal_quat_t.to(obj_quat.device)))
+        dot = torch.clamp(dot, 0.0, 1.0)
+        rot_dist = 2.0 * torch.acos(dot)
+
+        return pos_dist.item() < pos_threshold and rot_dist.item() < rot_threshold
+
+    return checker
+
+
 def get_scale(prim: Usd.Prim) -> Gf.Vec3d:
     """
     Get the scale parameter applied to a Usd.Prim.
